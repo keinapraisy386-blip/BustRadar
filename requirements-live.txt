@@ -1,0 +1,14 @@
+# daily live job (GitHub Actions)
+numpy
+pandas
+pyarrow
+xarray
+netCDF4
+scipy
+scikit-learn
+lightgbm
+matplotlib
+ecmwf-opendata
+cfgrib
+eccodes
+imdlib

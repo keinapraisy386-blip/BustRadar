@@ -1,0 +1,18 @@
+numpy
+pandas
+pyarrow
+xarray
+netCDF4
+scikit-learn
+lightgbm
+matplotlib
+ipykernel
+# notebook 01 only (Kaggle):
+dask
+zarr
+gcsfs
+imdlib
+# live mode only:
+ecmwf-opendata
+cfgrib
+eccodes
