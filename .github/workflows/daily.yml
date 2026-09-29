@@ -1,0 +1,100 @@
+# BustRadar daily live run: ECMWF open data -> bust prediction -> dashboard on GitHub Pages.
+# One-time setup: see "Automatic daily updates" in README.md.
+name: BustRadar daily live run
+
+on:
+  schedule:
+    - cron: "45 8 * * *"          # 08:45 UTC = 14:15 IST, after ECMWF publishes the 00 UTC run
+  workflow_dispatch:               # "Run workflow" button for a run right now
+
+permissions:
+  contents: write                  # to keep the live history in a release
+  pages: write
+  id-token: write
+
+concurrency:
+  group: bustradar-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MPLBACKEND: Agg
+      TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TG_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-live.txt
+
+      - name: Install
+        run: pip install -r requirements-live.txt
+
+      - name: Get data and models (release "data")
+        run: |
+          mkdir -p dl data/bustradar_data data/bustradar_models data/bustradar_unet
+          gh release download data -D dl
+          unzip -q -o dl/bustradar_data.zip -d data/bustradar_data
+          unzip -q -o dl/bustradar_models.zip -d data/bustradar_models
+          if [ -f dl/bustradar_unet.zip ]; then unzip -q -o dl/bustradar_unet.zip -d data/bustradar_unet; fi
+          # a zip made from inside the folder or of the folder itself: accept both
+          for d in bustradar_data bustradar_models bustradar_unet; do
+            if [ -d data/$d/$d ]; then mv data/$d/$d/* data/$d/ && rmdir data/$d/$d; fi
+          done
+          rm -rf dl
+          ls data/bustradar_data data/bustradar_models | head -50
+
+      - name: Restore live history (release "live-state")
+        run: |
+          if gh release download live-state -p live_state.zip -D . 2>/dev/null; then
+            unzip -q -o live_state.zip -d data/bustradar_data && rm live_state.zip && echo "history restored"
+          else
+            echo "no history yet (first run)"
+          fi
+
+      - name: 1. Download today's ECMWF forecast
+        run: |
+          python app/live.py --data data/bustradar_data --cache live_cache \
+            || python app/live.py --data data/bustradar_data --cache live_cache --source aws
+
+      - name: 2. Predict busts (notebook 02, infer mode)
+        run: python app/run_models.py --mode infer
+
+      - name: 3. Build the dashboard
+        run: |
+          python app/build_bundle.py --models data/bustradar_models --out site
+          cp site/bustradar_dashboard.html site/index.html
+          rm -f site/dashboard_server.html
+
+      - name: Save live history
+        run: |
+          cd data/bustradar_data
+          zip -q ../../live_state.zip maps/fc_live.nc maps/fcx_live.nc live_info.json regions_live.* $(ls maps/obs_live.nc 2>/dev/null)
+          cd ../..
+          gh release view live-state >/dev/null 2>&1 || gh release create live-state --title "Live history" --notes "Updated daily by the workflow."
+          gh release upload live-state live_state.zip --clobber
+
+      - name: Telegram bulletin (optional)
+        if: ${{ env.TG_TOKEN != '' }}
+        run: python app/alerts.py --bundle site/bundle.json --latest --by state --lang both --telegram-token "$TG_TOKEN" --telegram-chat "$TG_CHAT"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: live
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
